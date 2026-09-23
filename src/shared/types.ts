@@ -57,6 +57,8 @@ export interface GameSettings {
   plusCards: PlusCardDefinition[]
   forgetUnoPenalty: number
   enabledSpecialCards: Record<SpecialCardType, boolean>
+  requireSelfPlayToWin: boolean
+  allowPlayDrawnCard: boolean
 }
 
 // ============================================================
@@ -110,6 +112,8 @@ export interface GameState {
   winnerId: string | null
   settings: GameSettings
   turnStartTime: number | null
+  hasDrawnCardThisTurn: boolean
+  awaitingResolution: boolean
 }
 
 export interface ClientGameState {
@@ -126,6 +130,7 @@ export interface ClientGameState {
   winnerId: string | null
   settings: GameSettings
   turnStartTime: number | null
+  hasDrawnCardThisTurn: boolean
 }
 
 // ============================================================

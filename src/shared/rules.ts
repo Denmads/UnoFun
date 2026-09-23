@@ -40,6 +40,20 @@ function autoProtectUnoPlayers(
   }
 }
 
+/**
+ * Declare a win if the player's hand is empty. Victims of another player's
+ * special-card effect (isOwnPlay = false) only win if settings allow it —
+ * see GameSettings.requireSelfPlayToWin.
+ */
+function checkForWin(state: GameState, player: Player, events: GameEvent[], isOwnPlay: boolean): boolean {
+  if (player.hand.length !== 0 || state.winnerId) return false
+  if (!isOwnPlay && state.settings.requireSelfPlayToWin) return false
+  state.winnerId = player.id
+  state.phase = 'results'
+  events.push({ type: 'player-won', playerId: player.id })
+  return true
+}
+
 const CARD_SCORE_BY_TYPE: Record<string, number> = {
   'communism': 100,
   'king': 95,
@@ -181,6 +195,7 @@ export function toClientState(state: GameState, playerId: string): ClientGameSta
     winnerId: state.winnerId,
     settings: state.settings,
     turnStartTime: state.turnStartTime,
+    hasDrawnCardThisTurn: state.hasDrawnCardThisTurn,
   }
 }
 
@@ -246,6 +261,8 @@ function getSkipTarget(state: GameState, skipIndex: number): Player | null {
 export function advanceTurn(state: GameState, skip: number = 1): void {
   state.currentPlayerIndex = getNextPlayerIndex(state, skip)
   state.turnStartTime = Date.now()
+  state.hasDrawnCardThisTurn = false
+  state.awaitingResolution = false
 
   // Reset UNO call for the new current player
   const currentPlayer = state.players[state.currentPlayerIndex]
@@ -350,6 +367,10 @@ function processPlayCards(
     return [{ type: 'error', message: 'Not your turn' }]
   }
 
+  if (state.awaitingResolution) {
+    return [{ type: 'error', message: 'Resolve the pending choice first' }]
+  }
+
   const cards = cardIds.map(id => player.hand.find(c => c.id === id)).filter((c): c is Card => c !== undefined)
   if (cards.length !== cardIds.length) {
     return [{ type: 'error', message: 'Card not in hand' }]
@@ -392,10 +413,7 @@ function processPlayCards(
   events.push(...effectEvents)
 
   // Check for win
-  if (player.hand.length === 0) {
-    state.winnerId = player.id
-    state.phase = 'results'
-    events.push({ type: 'player-won', playerId: player.id })
+  if (checkForWin(state, player, events, true)) {
     return events
   }
 
@@ -408,6 +426,8 @@ function processPlayCards(
     const skipCount = cards.filter(c => c.type === 'skip').length
     const skipAmount = skipCount > 0 ? 1 + skipCount : 1
     advanceTurn(state, skipAmount)
+  } else {
+    state.awaitingResolution = true
   }
 
   return events
@@ -497,6 +517,7 @@ function processCardEffect(
         const bestIdx = findBestCardIndex(other.hand)
         const bestCard = other.hand.splice(bestIdx, 1)[0]
         player.hand.push(bestCard)
+        if (checkForWin(state, other, events, false)) break
       }
       autoProtectUnoPlayers(handCountsBefore, affectedOthers)
       events.push({ type: 'king-tribute', kingId: player.id, cards: {} })
@@ -512,6 +533,7 @@ function processCardEffect(
         const randomIdx = Math.floor(Math.random() * other.hand.length)
         const taxCard = other.hand.splice(randomIdx, 1)[0]
         player.hand.push(taxCard)
+        if (checkForWin(state, other, events, false)) break
       }
       autoProtectUnoPlayers(taxHandCounts, taxAffected)
       events.push({ type: 'tax-collected', collectorId: player.id })
@@ -538,6 +560,9 @@ function processCardEffect(
         player.hand.push(allCards[cardIdx++])
       }
       autoProtectUnoPlayers(communismHandCounts, connectedPlayers)
+      for (const p of connectedPlayers) {
+        if (p.id !== player.id && checkForWin(state, p, events, false)) break
+      }
       events.push({ type: 'communism-activated', playerId: player.id })
       break
     }
@@ -585,6 +610,10 @@ function processDrawCard(
     return [{ type: 'error', message: 'Not your turn' }]
   }
 
+  if (state.awaitingResolution) {
+    return [{ type: 'error', message: 'Resolve the pending choice first' }]
+  }
+
   const events: GameEvent[] = []
 
   // If there's a plus chain, draw the full amount
@@ -598,11 +627,33 @@ function processDrawCard(
     return events
   }
 
+  // If they already drew this turn and are drawing again, that means they're
+  // declining to play the card they just drew — end their turn.
+  if (state.hasDrawnCardThisTurn) {
+    advanceTurn(state)
+    return events
+  }
+
   // Normal draw
   const drawn = drawCards(state, 1)
   if (drawn.length > 0) {
     player.hand.push(...drawn)
     events.push({ type: 'card-drawn', playerId: player.id, count: drawn.length })
+    // Only reachable if the player started their turn with 0 cards (e.g. a special
+    // card took their last card while requireSelfPlayToWin was on) — they had no
+    // chance to call UNO themselves, so protect them from an unfair "forgot uno".
+    if (player.hand.length === 1) {
+      player.calledUno = true
+    }
+    state.hasDrawnCardThisTurn = true
+
+    const discardTop = state.discardPile[state.discardPile.length - 1]
+    const canPlayNow = state.settings.allowPlayDrawnCard && discardTop &&
+      canPlayCard(drawn[0], discardTop, state.currentColor, null, state.settings)
+    if (canPlayNow) {
+      // Let them play the just-drawn card — don't advance the turn yet.
+      return events
+    }
   }
   advanceTurn(state)
   return events
@@ -615,11 +666,17 @@ function processCallUno(
   player: Player,
   message: string
 ): GameEvent[] {
-  // Allow UNO call if: player has 1 card (off-turn safety), or it's their turn (pre-call
-  // before playing — covers stacking multiple cards down to 1). A premature call is harmless
-  // because advanceTurn resets calledUno when their next turn starts.
+  // Allow UNO call if: player has 1 card (off-turn safety), or it's their turn with exactly
+  // 2 cards AND at least one of them is actually playable right now (pre-call before playing
+  // down to 1). Without the playability check, a player could pre-call with 2 dead cards
+  // they're about to draw over instead of play, staying falsely protected from "forgot uno"
+  // once their hand later organically reaches 1 card.
   const isTheirTurn = state.players[state.currentPlayerIndex]?.id === player.id
-  if (player.hand.length === 1 || isTheirTurn) {
+  const discardTop = state.discardPile[state.discardPile.length - 1]
+  const hasPlayableCard = !!discardTop && player.hand.some(c =>
+    canPlayCard(c, discardTop, state.currentColor, state.plusChain, state.settings)
+  )
+  if (player.hand.length === 1 || (isTheirTurn && player.hand.length === 2 && hasPlayableCard)) {
     player.calledUno = true
     return [{ type: 'uno-called', playerId: player.id, message }]
   }
@@ -685,6 +742,10 @@ function processChallengeWild(
   const challenger = state.players.find(p => p.id === challengerId)
   if (!target || !challenger) return [{ type: 'error', message: 'Player not found' }]
 
+  if (challengerId === targetPlayerId) {
+    return [{ type: 'error', message: 'Cannot challenge your own card' }]
+  }
+
   // Use the color that was in effect BEFORE the wild was played
   const prevColor = state.plusChain.colorBeforeWild
   if (!prevColor) {
@@ -719,6 +780,7 @@ function processPickColor(
   color: CardColor
 ): GameEvent[] {
   const events: GameEvent[] = []
+  state.awaitingResolution = false
   state.currentColor = color
   events.push({ type: 'color-picked', playerId: player.id, color })
 
@@ -734,10 +796,7 @@ function processPickColor(
     }
 
     // Check for win after put-down-all
-    if (player.hand.length === 0) {
-      state.winnerId = player.id
-      state.phase = 'results'
-      events.push({ type: 'player-won', playerId: player.id })
+    if (checkForWin(state, player, events, true)) {
       return events
     }
 
@@ -788,6 +847,7 @@ function processSwapHand(
     return [{ type: 'error', message: 'Target not found or disconnected' }]
   }
 
+  state.awaitingResolution = false
   const swapHandCounts = new Map([[player.id, player.hand.length], [target.id, target.hand.length]])
   const tempHand = player.hand
   player.hand = target.hand
@@ -814,6 +874,7 @@ function processCircleHands(
   const connected = getConnectedPlayers(state)
   if (connected.length < 2) return []
 
+  state.awaitingResolution = false
   const circleHandCounts = new Map(connected.map(p => [p.id, p.hand.length]))
   const hands = connected.map(p => p.hand)
 
@@ -862,12 +923,15 @@ export function initializeGame(state: GameState, deckGenerator: (settings: GameS
   state.drawPile = drawPile
   state.discardPile = [startCard]
   state.currentColor = startCard.color as CardColor
-  state.currentPlayerIndex = 0
+  const startPlayer = connectedPlayers[Math.floor(Math.random() * connectedPlayers.length)]
+  state.currentPlayerIndex = state.players.findIndex(p => p.id === startPlayer.id)
   state.direction = 'clockwise'
   state.plusChain = null
   state.winnerId = null
   state.phase = 'playing'
   state.turnStartTime = Date.now()
+  state.hasDrawnCardThisTurn = false
+  state.awaitingResolution = false
 
   return []
 }

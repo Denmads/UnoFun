@@ -31,6 +31,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   infiniteDrawPile: false,
   plusCards: DEFAULT_PLUS_CARDS,
   forgetUnoPenalty: 2,
+  requireSelfPlayToWin: false,
+  allowPlayDrawnCard: false,
   enabledSpecialCards: {
     'skip': true,
     'reverse': true,

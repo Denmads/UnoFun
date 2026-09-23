@@ -242,6 +242,20 @@ export default function LobbyScreen() {
                   disabled={!isHost}
                 />
 
+                <Toggle
+                  label="Only Win By Playing Your Last Card"
+                  checked={settings.requireSelfPlayToWin}
+                  onChange={(v) => isHost && updateSetting('requireSelfPlayToWin', v)}
+                  disabled={!isHost}
+                />
+
+                <Toggle
+                  label="Allow Playing a Just-Drawn Card"
+                  checked={settings.allowPlayDrawnCard}
+                  onChange={(v) => isHost && updateSetting('allowPlayDrawnCard', v)}
+                  disabled={!isHost}
+                />
+
                 <Slider
                   label="Forget-UNO Penalty Cards"
                   value={settings.forgetUnoPenalty}

@@ -43,7 +43,7 @@ export default function GameScreen() {
 
   const {
     players, myHand, currentPlayerIndex, direction,
-    discardTop, drawPileCount, currentColor, plusChain, turnStartTime
+    discardTop, drawPileCount, currentColor, plusChain, turnStartTime, hasDrawnCardThisTurn
   } = gameState || {
     players: [],
     myHand: [],
@@ -53,7 +53,8 @@ export default function GameScreen() {
     drawPileCount: 0,
     currentColor: null,
     plusChain: { totalAmount: 0, playerId: null, canReflect: false },
-    turnStartTime: null
+    turnStartTime: null,
+    hasDrawnCardThisTurn: false
   }
 
   const currentPlayer = players[currentPlayerIndex]
@@ -108,13 +109,16 @@ export default function GameScreen() {
     return sortCardsByColor(myHand)
   }, [myHand])
 
-  // Auto-show challenge dialog when a wild plus card is played on me (I'm next to draw)
+  // Auto-show challenge dialog when a wild plus card is played on me (I'm next to draw).
+  // Must not fire for the player who played the card themselves (activeDialog !== null also
+  // guards against clobbering their own still-open color picker during that brief window).
   useEffect(() => {
-    if (!isMyTurn || !discardTop || activeDialog === 'challenge') return
+    if (!isMyTurn || !discardTop || activeDialog !== null) return
     if (
       discardTop.type === 'plus' &&
       discardTop.color === 'wild' &&
-      plusChain?.lastWildPlayerId != null
+      plusChain?.lastWildPlayerId != null &&
+      plusChain.lastWildPlayerId !== myPlayerId
     ) {
       // Only show dialog if this is a NEW card (not the same card from a previous render)
       if (discardTop.id !== lastChallengeCardId.current) {
@@ -124,7 +128,7 @@ export default function GameScreen() {
         }
       }
     }
-  }, [isMyTurn, discardTop, plusChain, activeDialog, settings.allowChallengeWild])
+  }, [isMyTurn, discardTop, plusChain, activeDialog, settings.allowChallengeWild, myPlayerId])
 
   const handleCardClick = useCallback((card: CardType) => {
     if (!isMyTurn) return
@@ -313,7 +317,7 @@ export default function GameScreen() {
           <CardStack
             topCard={null}
             count={drawPileCount}
-            label="Draw"
+            label={isMyTurn && hasDrawnCardThisTurn ? 'Pass' : 'Draw'}
             onClick={isMyTurn ? handleDraw : undefined}
             highlight={isMyTurn && playableIds.size === 0}
           />

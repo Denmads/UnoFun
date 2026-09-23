@@ -1,15 +1,3 @@
-Make the cards in the hand bigger.
-
-challenge wildcard, + wild cards, can not choose color. Also the player playing the +4 is allowed to challenge it self.
-Always choose color, before executing card
-If special cards are used, which removes cards from other players, and they have 1 card, so they go to 0. They do not win.
-Implement setting, to allow play of just drawn card, if it can be played.
-Random person starting, not always host
-Can say uno, with tow cards, where neither can be played.
-If going from 0 cards to 1 on a turn, the other can say forgot uno.
-Still some cases with special cards, which does 
-
-
 Extra features:
 Random turn order setting
 Random direction change setting - based on percentage chance

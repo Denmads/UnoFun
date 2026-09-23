@@ -46,6 +46,8 @@ export class GameServer {
       winnerId: null,
       settings: structuredClone(DEFAULT_SETTINGS),
       turnStartTime: null,
+      hasDrawnCardThisTurn: false,
+      awaitingResolution: false,
     }
   }
 
